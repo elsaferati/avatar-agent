@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Presentation Agent</title>
+    <style>
+        :root {
+            --bg: #0c0f17;
+            --panel: #131826;
+            --accent: #4da3ff;
+            --text: #e9eefb;
+            --muted: #8ca0c2;
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            font-family: "Inter", system-ui, -apple-system, sans-serif;
+            background: radial-gradient(120% 120% at 20% 20%, #1a2336, #0b0f1a 60%);
+            color: var(--text);
+        }
+        h1 { text-align: center; margin: 32px 0 8px; }
+        .sub { text-align: center; color: var(--muted); margin-bottom: 24px; }
+        .layout {
+            display: grid;
+            grid-template-columns: 3fr 1.2fr;
+            grid-template-rows: auto auto;
+            grid-template-areas:
+                "slides prompt"
+                "slides avatar";
+            gap: 16px;
+            padding: 0 16px 28px;
+            max-width: 1800px;
+            margin: 0 auto;
+            align-items: start;
+        }
+        .slides-card { grid-area: slides; }
+        .prompt-card { grid-area: prompt; }
+        .avatar-frame { grid-area: avatar; }
+        .card {
+            background: var(--panel);
+            border: 1px solid rgba(255,255,255,0.05);
+            border-radius: 16px;
+            padding: 14px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.35);
+        }
+        .avatar-frame iframe {
+            width: 100%;
+            height: 440px;
+            border: none;
+            border-radius: 12px;
+            background: #000;
+        }
+        .pdf-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 10px;
+            flex-wrap: wrap;
+        }
+        .pdf-header h3 {
+            margin: 0;
+            font-size: 16px;
+            font-weight: 600;
+        }
+        .pill {
+            background: rgba(77,163,255,0.15);
+            color: var(--text);
+            padding: 6px 10px;
+            border-radius: 999px;
+            font-size: 12px;
+            border: 1px solid rgba(77,163,255,0.25);
+        }
+        .controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            flex-wrap: wrap;
+            margin-bottom: 10px;
+        }
+        .controls button, .controls label, .controls input[type="file"] {
+            background: #1c2536;
+            color: var(--text);
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 10px;
+            padding: 10px 14px;
+            font-size: 14px;
+            cursor: pointer;
+        }
+        .controls button:hover { border-color: rgba(77,163,255,0.5); }
+        .pdf-stage {
+            background: #0a0c14;
+            border: 1px solid rgba(255,255,255,0.05);
+            border-radius: 12px;
+            height: 70vh;
+            max-height: 820px;
+            min-height: 500px;
+            display: grid;
+            place-items: center;
+            padding: 10px;
+            position: relative;
+        }
+        #pdf-canvas {
+            max-width: 100%;
+            width: 100%;
+            height: 100%;
+            background: #0d111a;
+            border-radius: 8px;
+        }
+        .status {
+            color: var(--muted);
+            font-size: 12px;
+            margin-top: 6px;
+        }
+        .chat {
+            margin-top: 12px;
+            display: grid;
+            grid-template-columns: 1fr auto;
+            gap: 8px;
+        }
+        .chat textarea {
+            width: 100%;
+            min-height: 80px;
+            border-radius: 10px;
+            border: 1px solid rgba(255,255,255,0.08);
+            background: #0f1421;
+            color: var(--text);
+            padding: 10px;
+            resize: vertical;
+            font-size: 14px;
+        }
+        .chat button {
+            padding: 10px 12px;
+            border-radius: 10px;
+            border: 1px solid rgba(77,163,255,0.6);
+            background: linear-gradient(135deg, #4da3ff, #7cd2ff);
+            color: #051020;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        .hint { color: var(--muted); font-size: 12px; margin-top: 6px; }
+        @media (max-width: 1024px) {
+            .layout { grid-template-columns: 1fr; }
+            .avatar-frame iframe, .pdf-stage { height: 500px; }
+        }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script>pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";</script>
+</head>
+<body>
+
+    <h1>Presentation Agent</h1>
+    <p class="sub">Avatar + slides + chat in one screen. Load a PDF/PowerPoint (exported as PDF) and let the agent present it.</p>
+
+    <div class="layout">
+        <div class="card slides-card">
+            <div class="pdf-header">
+                <h3>Slides / PDF Stage</h3>
+                <span class="pill">Load PDF</span>
+            </div>
+            <div class="controls">
+                <label for="pdf-input">Choose PDF</label>
+                <input id="pdf-input" type="file" accept="application/pdf">
+                <button id="prev-btn" disabled>Prev</button>
+                <button id="next-btn" disabled>Next</button>
+                <span id="page-info" class="status">No file loaded</span>
+            </div>
+            <div class="pdf-stage">
+                <canvas id="pdf-canvas"></canvas>
+            </div>
+            <div class="hint">Tip: Export your PowerPoint as PDF, then load it here. The avatar can narrate while users view the slides.</div>
+            <div class="chat">
+                <textarea id="chat-input" placeholder="Type notes/questions for the agent here..."></textarea>
+                <div style="display:flex; flex-direction:column; gap:8px;">
+                    <button id="present-btn">Present deck</button>
+                    <button id="chat-send">Send</button>
+                </div>
+            </div>
+            <div class="hint">"Present deck" extracts text from every slide and sends it to the agent via /agent/present.</div>
+        </div>
+
+        <div class="card prompt-card">
+            <div class="pdf-header">
+                <h3>Presenter style</h3>
+                <span class="pill">Optional prompt</span>
+            </div>
+            <textarea id="prompt-input" style="width:100%; min-height:180px; border-radius:10px; border:1px solid rgba(255,255,255,0.08); background:#0f1421; color:var(--text); padding:10px; resize:vertical;" placeholder="Add tone, audience, key points for the presenter..."></textarea>
+            <div class="hint">Prepended to each slide prompt sent to the agent.</div>
+        </div>
+
+        <div class="card avatar-frame">
+            <div class="pdf-header">
+                <h3>Avatar Live</h3>
+                <span class="pill">Simli session embed</span>
+            </div>
+            <iframe
+                id="simli-frame"
+                src="https://app.simli.com/session/bda02349-bf90-461e-be3f-88a8c5a254a0/gAAAAABpNouDjCapVH0TBQ8qLi4tuP3sF4DL0WCrTA95fs6LbPnG3rsGlIJPTOHYW4jwrCETp3DxqVHXoBkRkYoYMsqEXOIOyeu9h5Jds5o4rMWcMGP-W_xMu04UuZVbRefUWbktbo69oK_Y316HWa_xlHy1AGd9f8jU7fctSkuqDP05SoIezYsiRqCbQN2_B7k_OBjX6YyPrxAJgwYk-2cfk8z2y2upHS9CizkjTGmmAUfmcjEtIYK-aZl1Q06WXW7RfGm6qWrAMmSZrzNMVvLitwbZ2oRs--E_-DDeUgsmJ8Bu2c06XWuWBadEAh1n7KqMRkTYFznjHOKPoC277zkKpAhykMWEGZ9Imyje52aYxVDRXk6XURjOwj6n7p-i2osnZ9Ny8Y7hGjbUqrwpeUbrSy2bAa8piA8X6eFIqdgy2ZRrgnMO4Q_oYr0J5cWh7OPD8YD_69CF"
+                title="Simli Avatar"
+                allow="camera; microphone; autoplay">
+            </iframe>
+            <div class="hint">If the iframe doesn’t load, open the link directly to confirm it’s active, then paste a fresh link.</div>
+            <div class="controls" style="margin-top:12px;">
+                <button id="connect-btn">Connect Agent (API)</button>
+                <span id="agent-status" class="status">Status: Not connected</span>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Simple PDF viewer with pdf.js for local files
+        const input = document.getElementById('pdf-input');
+        const canvas = document.getElementById('pdf-canvas');
+        const ctx = canvas.getContext('2d');
+        const prevBtn = document.getElementById('prev-btn');
+        const nextBtn = document.getElementById('next-btn');
+        const pageInfo = document.getElementById('page-info');
+
+        let pdfDoc = null;
+        let pageNum = 1;
+        let sessionToken = null;
+        let isConnected = false;
+        let simliRoomUrl = null; // latest Simli room URL (iframe follows this)
+        let presenting = false;
+
+        function renderPage(num) {
+            pdfDoc.getPage(num).then(page => {
+                const viewport = page.getViewport({ scale: 1.4 });
+                canvas.height = viewport.height;
+                canvas.width = viewport.width;
+
+                const renderContext = {
+                    canvasContext: ctx,
+                    viewport: viewport
+                };
+                page.render(renderContext);
+                pageInfo.textContent = `Page ${pageNum} / ${pdfDoc.numPages}`;
+                prevBtn.disabled = pageNum <= 1;
+                nextBtn.disabled = pageNum >= pdfDoc.numPages;
+            });
+        }
+
+        function queueRender(num) {
+            if (!pdfDoc) return;
+            pageNum = num;
+            renderPage(pageNum);
+        }
+
+        prevBtn.onclick = () => queueRender(pageNum - 1);
+        nextBtn.onclick = () => queueRender(pageNum + 1);
+
+        input.addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            pageInfo.textContent = 'Loading PDF...';
+            const fileData = new Uint8Array(await file.arrayBuffer());
+            pdfDoc = await pdfjsLib.getDocument({ data: fileData }).promise;
+            pageNum = 1;
+            renderPage(pageNum);
+        });
+
+        async function getPageText(num) {
+            if (!pdfDoc) return '';
+            const page = await pdfDoc.getPage(num);
+            const textContent = await page.getTextContent();
+            const strings = textContent.items.map(item => item.str).filter(Boolean);
+            return strings.join(' ').replace(/\s+/g, ' ').trim();
+        }
+
+        // Send freeform chat
+        document.getElementById('chat-send').onclick = async () => {
+            const text = document.getElementById('chat-input').value.trim();
+            if (!text) return;
+            await sendToAgent(text, false);
+            document.getElementById('chat-input').value = '';
+        };
+
+        function estimateSpeechMs(text) {
+            const words = text ? text.split(/\s+/).filter(Boolean).length : 0;
+            const seconds = Math.max(12, Math.min(35, words / 1.5 + 4)); // slower pacing, more buffer
+            return seconds * 1000;
+        }
+
+        function setControlsDisabled(disabled) {
+            prevBtn.disabled = disabled || pageNum <= 1;
+            nextBtn.disabled = disabled || (pdfDoc ? pageNum >= pdfDoc.numPages : true);
+            document.getElementById('present-btn').disabled = disabled;
+            // keep chat active during presentation
+        }
+
+        // Present entire deck: iterate all slides and send via /agent/present (LLM + Simli)
+        document.getElementById('present-btn').onclick = async () => {
+            if (!pdfDoc) {
+                setStatus('Load a PDF first');
+                return;
+            }
+            if (presenting) {
+                setStatus('Already presenting...');
+                return;
+            }
+            presenting = true;
+            setControlsDisabled(true);
+            setStatus('Preparing deck...');
+            const slides = [];
+            for (let i = 1; i <= pdfDoc.numPages; i++) {
+                const text = await getPageText(i);
+                slides.push({ num: i, text });
+            }
+
+            for (const slide of slides) {
+                // show the slide being narrated
+                queueRender(slide.num);
+                const stylePrompt = document.getElementById('prompt-input') ? document.getElementById('prompt-input').value.trim() : '';
+                const baseMessage = slide.text
+                    ? `Present slide ${slide.num} of ${slides.length}: ${slide.text}`
+                    : `Present slide ${slide.num} of ${slides.length}: (no extractable text, describe the slide visually)`;
+                const pacing = "Speak slowly and clearly at a human pace, pause between points, do not rush.";
+                const message = stylePrompt ? `${stylePrompt}\n\n${pacing}\n\n${baseMessage}` : `${pacing}\n\n${baseMessage}`;
+                const resp = await sendToAgent(message, true);
+                const waitMs = estimateSpeechMs(slide.text);
+                await new Promise(res => setTimeout(res, waitMs));
+            }
+            setStatus('Deck sent');
+            presenting = false;
+            setControlsDisabled(false);
+        };
+
+        // Connect to Simli session via backend
+        document.getElementById('connect-btn').onclick = async () => {
+            setStatus('Connecting...');
+            try {
+                const resp = await fetch('http://localhost:3000/simli/start-session', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        faceId: "cace3ef7-a4c4-425d-a8cf-a5358eb0c427",
+                        language: "en"
+                    })
+                });
+                const data = await resp.json();
+                if (!resp.ok) throw new Error(JSON.stringify(data));
+                sessionToken = data.session_token || data.sessionToken || data.sessionId || data.session || 'connected';
+                isConnected = true;
+                setStatus('Connected');
+                // If Simli returns a room URL on connect, load it in the iframe
+                if (data.roomUrl) {
+                    simliRoomUrl = data.roomUrl;
+                    const frame = document.getElementById('simli-frame');
+                    if (frame) {
+                        const withParams = simliRoomUrl.includes('?')
+                            ? `${simliRoomUrl}&autojoin=1&subscribeToTracks=audio,video`
+                            : `${simliRoomUrl}?autojoin=1&subscribeToTracks=audio,video`;
+                        frame.src = withParams;
+                    }
+                }
+            } catch (err) {
+                console.error(err);
+                setStatus('Failed to connect (see console)');
+            }
+        };
+
+        async function sendToAgent(text, useLLM) {
+            if (!sessionToken && !isConnected) {
+                setStatus('Not connected');
+                return null;
+            }
+            setStatus('Sending to agent...');
+            try {
+                const endpoint = useLLM ? 'http://localhost:3000/agent/present' : 'http://localhost:3000/simli/talk';
+                const payload = useLLM
+                    ? { slide_text: text, session_token: sessionToken }
+                    : { text, session_token: sessionToken };
+
+                const resp = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const data = await resp.json().catch(() => ({}));
+                if (!resp.ok) {
+                    console.error('Agent error', resp.status, data);
+                    setStatus(`Send failed (${resp.status})`);
+                    return null;
+                }
+                if (data && data.speech) {
+                    console.log('Agent speech:', data.speech);
+                    setStatus('Sent: ' + data.speech.slice(0, 60) + (data.speech.length > 60 ? '...' : ''));
+                } else {
+                    setStatus('Sent');
+                }
+
+                // If Simli returns a room URL, follow the latest session so audio stays in sync.
+                if (data && data.simli && data.simli.roomUrl) {
+                    simliRoomUrl = data.simli.roomUrl;
+                    const frame = document.getElementById('simli-frame');
+                    if (frame) {
+                        const withParams = simliRoomUrl.includes('?')
+                            ? `${simliRoomUrl}&autojoin=1&subscribeToTracks=audio,video`
+                            : `${simliRoomUrl}?autojoin=1&subscribeToTracks=audio,video`;
+                        if (frame.src !== withParams) {
+                            frame.src = withParams;
+                        }
+                    }
+                }
+
+                return data;
+            } catch (err) {
+                console.error(err);
+                setStatus('Send failed (see console)');
+                return null;
+            }
+        }
+
+        function setStatus(msg) {
+            const el = document.getElementById('agent-status');
+            if (el) el.textContent = `Status: ${msg}`;
+        }
+    </script>
+</body>
+</html>
