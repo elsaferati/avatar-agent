@@ -7,7 +7,7 @@ const { Pinecone } = require('@pinecone-database/pinecone');
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '50mb' })); // Increased limit for Image Base64
 
 // --- CONFIGURATION ---
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
@@ -29,7 +29,6 @@ if (PINECONE_API_KEY) {
 // Memory Storage
 let conversationHistory = [];
 
-// --- HELPER: GET KNOWLEDGE ---
 async function getCompanyKnowledge(query) {
     if (!pc || !PINECONE_INDEX_NAME) return "";
     try {
@@ -40,111 +39,91 @@ async function getCompanyKnowledge(query) {
     } catch (e) { return ""; }
 }
 
-// 1. CONFIG ENDPOINT
 app.get('/simli-config', (req, res) => {
-    conversationHistory = []; // Reset memory
+    conversationHistory = []; 
     res.json({ apiKey: SIMLI_API_KEY, faceID: SIMLI_FACE_ID });
 });
 
-// 2. THE PRESENTATION BRAIN
 app.post('/agent/speak', async (req, res) => {
-    // We now accept slideIndex and totalSlides to know "where" we are
-    const { text, type, context, slideIndex, totalSlides } = req.body; 
+    // NEW: We accept 'image' (base64)
+    const { text, type, context, slideIndex, totalSlides, image } = req.body; 
     
     try {
         let messages = [];
 
-        // --- SCENARIO A: PRESENTING (The "Human" Logic) ---
+        // --- SCENARIO A: PRESENTING (With Vision) ---
         if (type === 'PRESENT') {
             let styleInstruction = "";
             
-            // 1. DYNAMIC BEHAVIOR BASED ON SLIDE NUMBER
             if (slideIndex === 1) {
-                // FIRST SLIDE: Welcoming and setting the stage
-                styleInstruction = `
-                This is the FIRST slide. 
-                - Start with a warm welcome ("Hello everyone, I'm Elsa from PrimEx, thanks for joining...").
-                - Introduce the title of the presentation based on the text.
-                - Give a brief 1-sentence teaser of what we will cover.
-                - DO NOT just read the text. Act as the host.
-                `;
+                styleInstruction = `Start with a warm welcome. Introduce the title visible on the slide. Give a 1-sentence teaser.`;
             } else if (slideIndex === totalSlides) {
-                // LAST SLIDE: Conclusion
-                styleInstruction = `
-                This is the LAST slide.
-                - Summarize the key takeaway.
-                - Thank the audience.
-                - Ask if there are any questions.
-                `;
+                styleInstruction = `Summarize the key takeaway. Thank the audience. Ask if there are questions.`;
             } else {
-                // MIDDLE SLIDES: Storytelling
                 styleInstruction = `
-                This is a middle slide (Slide ${slideIndex} of ${totalSlides}).
-                - Use transition phrases like "Moving on to...", "If you look here...", "What is interesting is...".
-                - Act as if you are pointing at the slide. 
-                - Explain the *significance* of the text, don't just repeat it.
-                - Keep it engaging and high-energy.
+                - Explain the visual content of the slide (charts, bullets, images).
+                - Use transition phrases like "If you look at this graph..." or "As shown here...".
+                - Keep it engaging.
+                
+                TEACHER MODE: Occasionally (every 2-3 slides) ask a rhetorical question to check understanding, like "Does that make sense?" or "Pretty interesting, right?"
                 `;
             }
 
+            // VISION PAYLOAD
             messages = [
                 {
                     role: "system",
-                    content: `You are **Elsa**, the charismatic Lead Presenter for **PrimEx**.
-                    
-                    YOUR GOAL: You are NOT reading a script. You are presenting a deck to a live audience.
-                    
+                    content: `You are **Elsa**, the Lead Presenter for **PrimEx**. 
+                    You can SEE the slide the user is looking at. 
                     ${styleInstruction}
-                    
-                    RULES:
-                    - Be punchy. No long monologues. (Max 3 sentences).
-                    - Speak as "we" (the company).
-                    - Never say "Slide Number X". Just present the content.`
+                    RULES: Be punchy (Max 3 sentences). Speak as "we".`
                 },
-                { role: "user", content: `Slide Content: "${text}"` }
+                { 
+                    role: "user", 
+                    content: [
+                        { type: "text", text: `I am showing Slide ${slideIndex}. The extracted text is: "${text}". Present this slide based on the image provided.` },
+                        { type: "image_url", image_url: { url: image } } // Pass the image to GPT-4o
+                    ]
+                }
             ];
         } 
         
-        // --- SCENARIO B: ANSWERING QUESTIONS ---
+        // --- SCENARIO B: ANSWERING ---
         else if (type === 'ANSWER') {
             const pineconeData = await getCompanyKnowledge(text);
             messages = [
                 {
                     role: "system",
-                    content: `You are **Elsa**. You are currently presenting but just got interrupted by a question.
-                    
-                    CONTEXT:
-                    - Internal Knowledge: "${pineconeData}"
-                    - Slide Context: "${context}"
-                    
-                    Answer the question confidently but briefly. Then smoothly transition back to the presentation flow (e.g., "Great question. Now, back to the slide...").`
+                    content: `You are Elsa. You were presenting but got interrupted.
+                    internal_knowledge: "${pineconeData}"
+                    slide_context: "${context}"
+                    Answer briefly and transition back to the presentation.`
                 },
                 ...conversationHistory, 
                 { role: "user", content: text }
             ];
         }
 
-        // 1. Generate Script
         const completion = await openai.chat.completions.create({
-            model: "gpt-4o-mini", // fast and capable enough for flow
+            model: "gpt-4o", // SWITCHED TO GPT-4o FOR VISION
             messages: messages,
-            max_tokens: 200,
-            temperature: 0.7 // Higher creativity for "Presenting" feel
+            max_tokens: 250,
+            temperature: 0.7 
         });
         
         const finalScript = completion.choices[0].message.content;
 
-        // 2. Save Memory
+        // Save Memory
         conversationHistory.push({ role: "assistant", content: finalScript });
         if (conversationHistory.length > 6) conversationHistory = conversationHistory.slice(-6);
 
-        // 3. Audio Generation (ElevenLabs)
+        // Audio Generation
         const ttsResp = await axios.post(
             `https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}?output_format=pcm_16000`,
             {
                 text: finalScript,
                 model_id: "eleven_turbo_v2",
-                voice_settings: { stability: 0.4, similarity_boost: 0.8 } // Lower stability = more emotion/range
+                voice_settings: { stability: 0.4, similarity_boost: 0.8 } 
             },
             {
                 headers: { 'xi-api-key': ELEVENLABS_API_KEY, 'Content-Type': 'application/json' },
@@ -164,4 +143,4 @@ app.post('/agent/speak', async (req, res) => {
 });
 
 const PORT = 3000;
-app.listen(PORT, () => console.log(`✅ Elsa is ready on http://localhost:${PORT}`));
+app.listen(PORT, () => console.log(`✅ Elsa V2 (Vision) Ready on http://localhost:${PORT}`));
