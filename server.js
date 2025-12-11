@@ -63,7 +63,7 @@ app.post('/agent/speak', async (req, res) => {
                 // FIRST SLIDE: Welcoming and setting the stage
                 styleInstruction = `
                 This is the FIRST slide. 
-                - Start with a warm welcome ("Hello everyone, thanks for joining...").
+                - Start with a warm welcome ("Hello everyone, I'm Elsa from PrimEx, thanks for joining...").
                 - Introduce the title of the presentation based on the text.
                 - Give a brief 1-sentence teaser of what we will cover.
                 - DO NOT just read the text. Act as the host.
@@ -90,7 +90,7 @@ app.post('/agent/speak', async (req, res) => {
             messages = [
                 {
                     role: "system",
-                    content: `You are **Florent**, the charismatic Lead Presenter for **PrimEx**.
+                    content: `You are **Elsa**, the charismatic Lead Presenter for **PrimEx**.
                     
                     YOUR GOAL: You are NOT reading a script. You are presenting a deck to a live audience.
                     
@@ -111,7 +111,7 @@ app.post('/agent/speak', async (req, res) => {
             messages = [
                 {
                     role: "system",
-                    content: `You are **Florent**. You are currently presenting but just got interrupted by a question.
+                    content: `You are **Elsa**. You are currently presenting but just got interrupted by a question.
                     
                     CONTEXT:
                     - Internal Knowledge: "${pineconeData}"
@@ -164,4 +164,4 @@ app.post('/agent/speak', async (req, res) => {
 });
 
 const PORT = 3000;
-app.listen(PORT, () => console.log(`✅ Florent is ready on http://localhost:${PORT}`));
+app.listen(PORT, () => console.log(`✅ Elsa is ready on http://localhost:${PORT}`));
