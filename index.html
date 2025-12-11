@@ -3,230 +3,343 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI Presenter</title>
+    <title>PrimEx AI Presenter (Voice Enabled)</title>
     <style>
-        body { background: #0b0f1a; color: #e9eefb; font-family: sans-serif; display: flex; height: 100vh; margin: 0; overflow: hidden; }
-        .col { padding: 20px; display: flex; flex-direction: column; gap: 15px; }
-        .left { flex: 3; border-right: 1px solid #333; }
-        .right { flex: 1.2; background: #131826; }
+        /* --- STYLING --- */
+        body { 
+            background: #111; color: #fff; font-family: 'Segoe UI', sans-serif; 
+            display: flex; height: 100vh; margin: 0; overflow: hidden; 
+        }
+        .col { padding: 25px; display: flex; flex-direction: column; gap: 20px; }
+        .left { flex: 2; border-right: 1px solid #333; }
+        .right { flex: 1; background: #1a1a1a; display: flex; flex-direction: column; position: relative; }
        
-        /* Slide Stage */
-        #pdf-stage { flex: 1; background: #000; border-radius: 8px; display: flex; justify-content: center; align-items: center; border: 1px solid #333; }
-        canvas { max-width: 100%; max-height: 100%; }
-       
-        /* Avatar Stage */
-        #avatar-stage { height: 400px; background: #000; border-radius: 8px; border: 1px solid #333; overflow: hidden; position: relative; }
-        iframe { width: 100%; height: 100%; border: none; }
-       
-        /* Controls */
-        .btn { background: #4da3ff; color: #000; border: none; padding: 10px 20px; border-radius: 6px; font-weight: bold; cursor: pointer; transition: 0.2s; }
-        .btn:hover { background: #7abeff; }
-        .btn:disabled { background: #333; color: #888; cursor: not-allowed; }
-        textarea { width: 90%; background: #0f1421; color: white; border: 1px solid #333; padding: 10px; border-radius: 6px; resize: none; margin-bottom: 10px;}
-       
-        .interacting { border: 2px solid #4da3ff !important; box-shadow: 0 0 20px rgba(77,163,255,0.3); }
+        /* PDF STAGE */
+        #pdf-stage { 
+            flex: 1; background: #000; display: flex; justify-content: center; 
+            align-items: center; border: 1px solid #333; border-radius: 12px; overflow: hidden; 
+        }
+        canvas { max-width: 100%; max-height: 100%; object-fit: contain;}
+
+        /* CAPTION & STATUS */
+        #caption-box {
+            background: #0e0e0e; border: 1px solid #333; border-radius: 8px; padding: 15px;
+            min-height: 60px; font-size: 14px; color: #ccc; font-style: italic; line-height: 1.4;
+        }
+
+        /* AVATAR STAGE */
+        #avatar-container { 
+            height: 380px; width: 100%; background: #000; position: relative; 
+            overflow: hidden; border-radius: 12px; border: 1px solid #333;
+            transition: all 0.3s ease;
+        }
+        video { width: 100%; height: 100%; object-fit: cover; }
+        
+        /* OVERLAY */
+        #connect-overlay {
+            position: absolute; inset: 0; background: rgba(0,0,0,0.85); 
+            display: flex; justify-content: center; align-items: center; 
+            flex-direction: column; gap: 15px; z-index: 10;
+        }
+
+        /* CONTROLS */
+        .controls { margin-top: auto; display: flex; flex-direction: column; gap: 10px; }
+        
+        .input-group { display: flex; gap: 10px; }
+        
+        button { 
+            padding: 14px; cursor: pointer; background: #007bff; color: white; 
+            border: none; border-radius: 8px; font-weight: 600; font-size: 14px; 
+            transition: 0.2s;
+        }
+        button:hover { background: #0056b3; }
+        button:disabled { background: #333; color: #666; cursor: not-allowed; }
+
+        textarea { 
+            flex: 1; padding: 12px; background: #222; color: white; 
+            border: 1px solid #444; resize: none; border-radius: 8px; 
+            font-family: inherit; outline: none;
+        }
+
+        /* MIC BUTTON STYLES */
+        #mic-btn {
+            background: #333; width: 50px; display: flex; justify-content: center; align-items: center; font-size: 20px;
+        }
+        #mic-btn.listening {
+            background: #ff4d4d; animation: pulse 1.5s infinite;
+        }
+
+        @keyframes pulse {
+            0% { box-shadow: 0 0 0 0 rgba(255, 77, 77, 0.7); }
+            70% { box-shadow: 0 0 0 10px rgba(255, 77, 77, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(255, 77, 77, 0); }
+        }
+
+        /* STATES */
+        .listening-mode { border-color: #ff4d4d !important; box-shadow: 0 0 20px rgba(255, 77, 77, 0.3); }
+        .speaking-mode { border-color: #007bff !important; box-shadow: 0 0 20px rgba(0, 123, 255, 0.3); }
     </style>
+    
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
     <script>pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";</script>
 </head>
 <body>
+
+    <!-- LEFT: SLIDES -->
     <div class="col left">
-        <div style="display:flex; justify-content:space-between; align-items:center;">
-            <h2>📊 Slide Deck</h2>
-            <div>
-                <input type="file" id="pdf-input" accept="application/pdf" style="color:#888">
-                <button id="present-btn" class="btn" disabled>▶ Start Presentation</button>
-            </div>
+        <div style="display:flex; justify-content: space-between; align-items: center;">
+            <h3 style="margin:0">📊 Presentation Deck</h3>
+            <input type="file" id="pdf-input" accept="application/pdf">
         </div>
         <div id="pdf-stage"><canvas id="pdf-canvas"></canvas></div>
-        <div id="caption" style="color:#888; min-height: 20px; font-style: italic;">Waiting for slides...</div>
+        <div id="caption-box">Load a PDF to start...</div>
     </div>
  
+    <!-- RIGHT: AVATAR -->
     <div class="col right">
-        <h2>🤖 AI Presenter</h2>
-       
-        <div id="avatar-stage">
-            <div id="connect-overlay" style="position:absolute; inset:0; display:flex; justify-content:center; align-items:center; background:rgba(0,0,0,0.8); z-index: 10;">
-                <button id="connect-btn" class="btn">Connect Avatar</button>
+        <div id="avatar-container">
+            <video id="simli-video" autoplay playsinline></video>
+            <audio id="simli-audio" autoplay></audio>
+            
+            <div id="connect-overlay">
+                <h2>AI Presenter</h2>
+                <button id="connect-btn">🔌 Connect Florent</button>
             </div>
-            <iframe id="simli-frame" allow="camera; microphone; autoplay"></iframe>
         </div>
- 
-        <div style="margin-top:auto;">
-            <p>Interrupt the presenter:</p>
-            <textarea id="question-input" rows="3" placeholder="Type a question..."></textarea>
-            <button id="ask-btn" class="btn" style="width:100%;">Ask Question</button>
+
+        <div style="text-align:center; font-size:12px; color:#666;" id="status-text">Status: Offline</div>
+
+        <div class="controls">
+            <button id="start-btn" disabled>▶ Start Presentation</button>
+            
+            <!-- INPUT AREA -->
+            <div class="input-group">
+                <textarea id="q-input" rows="1" placeholder="Type or use Mic..."></textarea>
+                <button id="mic-btn" title="Speak Question">🎙️</button>
+            </div>
+            <button id="send-btn" disabled>Send Message</button>
         </div>
     </div>
  
-    <script>
-        let pdfDoc = null, pageNum = 1, isConnected = false;
-        let isInteracting = false;
+    <!-- LOGIC -->
+    <script type="module">
+        import { SimliClient } from 'https://esm.sh/simli-client@latest';
+
+        const BASE_URL = 'http://127.0.0.1:3000';
+        
+        // --- GLOBAL STATE ---
+        let pdfDoc = null;
+        let pageNum = 1;
+        let isInterrupted = false; // THE TRAFFIC LIGHT
+        
+        // Audio & Simli Setup
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+        const simli = new SimliClient();
+        
+        // Voice Recognition Setup
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        const recognition = new SpeechRecognition();
+        recognition.continuous = false; // Stop after one sentence
+        recognition.lang = 'en-US';
+        recognition.interimResults = false;
+
+        // DOM Elements
+        const videoEl = document.getElementById('simli-video');
+        const audioEl = document.getElementById('simli-audio');
+        const statusEl = document.getElementById('status-text');
+        const captionEl = document.getElementById('caption-box');
+        const avatarContainer = document.getElementById('avatar-container');
+
+        // --- 1. CONNECT AVATAR ---
+        document.getElementById('connect-btn').onclick = async () => {
+            const btn = document.getElementById('connect-btn');
+            btn.textContent = "Connecting...";
+            try {
+                await audioCtx.resume();
+                const cfgReq = await fetch(`${BASE_URL}/simli-config`);
+                const config = await cfgReq.json();
+                
+                simli.Initialize({ apiKey: config.apiKey, faceID: config.faceID, handleSilence: true, videoRef: videoEl, audioRef: audioEl });
+                await simli.start();
+                
+                statusEl.textContent = "Status: Online";
+                document.getElementById('connect-overlay').style.display = 'none';
+                if(pdfDoc) document.getElementById('start-btn').disabled = false;
+                document.getElementById('send-btn').disabled = false;
+            } catch (err) {
+                alert("Error: " + err.message);
+                btn.textContent = "Retry";
+            }
+        };
+
+        // --- 2. VOICE RECOGNITION LOGIC ---
+        const micBtn = document.getElementById('mic-btn');
+        
+        micBtn.onclick = () => {
+            if (micBtn.classList.contains('listening')) {
+                recognition.stop(); // Manual stop
+            } else {
+                // START INTERRUPTION
+                isInterrupted = true; 
+                simli.ClearBuffer(); // SHUT UP AVATAR IMMEDIATELY
+                
+                recognition.start();
+                micBtn.classList.add('listening');
+                avatarContainer.classList.add('listening-mode');
+                statusEl.textContent = "Status: Listening to you...";
+                captionEl.textContent = "(Listening...)";
+            }
+        };
+
+        recognition.onresult = (event) => {
+            const transcript = event.results[0][0].transcript;
+            document.getElementById('q-input').value = transcript;
+            
+            // Auto-send after voice detected
+            handleInteraction(transcript);
+        };
+
+        recognition.onend = () => {
+            micBtn.classList.remove('listening');
+            // We don't remove 'isInterrupted' here yet, wait for answer to finish
+        };
+
+        recognition.onerror = (event) => {
+            console.error("Speech Error", event.error);
+            micBtn.classList.remove('listening');
+            avatarContainer.classList.remove('listening-mode');
+            isInterrupted = false; // Resume if error
+        };
+
+        // --- 3. HANDLE INTERACTION (Text or Voice) ---
+        document.getElementById('send-btn').onclick = () => {
+            const text = document.getElementById('q-input').value;
+            handleInteraction(text);
+        };
+
+        async function handleInteraction(question) {
+            if(!question) return;
+
+            // 1. Set State
+            isInterrupted = true;
+            simli.ClearBuffer(); // Ensure silence
+            avatarContainer.classList.remove('listening-mode');
+            avatarContainer.classList.add('speaking-mode');
+
+            // 2. Get Context
+            const context = await getPageText(pageNum);
+            
+            // 3. Ask Backend
+            await speak(question, 'ANSWER', context);
+
+            // 4. Cleanup UI
+            document.getElementById('q-input').value = "";
+            avatarContainer.classList.remove('speaking-mode');
+            
+            // 5. RESUME PRESENTATION
+            statusEl.textContent = "Status: Resuming presentation...";
+            setTimeout(() => {
+                isInterrupted = false; // This releases the 'await' loop below
+            }, 1000); 
+        }
+
+        // --- 4. THE CORE BRAIN (Speak) ---
+        async function speak(text, type, context = '', slideIndex = 0, totalSlides = 0) {
+            if(type === 'ANSWER') captionEl.textContent = "Thinking...";
+            
+            try {
+                const res = await fetch(`${BASE_URL}/agent/speak`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ text, type, context, slideIndex, totalSlides })
+                });
+                const data = await res.json();
+                
+                captionEl.textContent = `"${data.text}"`;
+                
+                // Decode Audio
+                const binaryString = window.atob(data.audio);
+                const len = binaryString.length;
+                const bytes = new Uint8Array(len);
+                for (let i = 0; i < len; i++) { bytes[i] = binaryString.charCodeAt(i); }
+
+                simli.sendAudioData(bytes);
+
+                const durationMs = (bytes.length / 2 / 16000) * 1000;
+                
+                // Wait for audio to finish
+                await new Promise(r => setTimeout(r, durationMs + 1000)); 
+
+            } catch (err) {
+                console.error(err);
+                statusEl.textContent = "Error speaking";
+            }
+        }
+
+        // --- 5. THE PRESENTATION LOOP (Resumable) ---
+        document.getElementById('start-btn').onclick = async () => {
+            if(!pdfDoc) return alert("Load PDF first");
+            
+            const btn = document.getElementById('start-btn');
+            btn.disabled = true;
+            btn.textContent = "Presenting...";
+            isInterrupted = false;
+
+            const totalSlides = pdfDoc.numPages;
+
+            for(let i = 1; i <= totalSlides; i++) {
+                
+                // --- INTERRUPTION CHECKER ---
+                // While interrupted, we loop internally every 500ms 
+                // effectively pausing the slide progression.
+                while(isInterrupted) {
+                    await new Promise(r => setTimeout(r, 500));
+                }
+
+                // If we resumed, ensure we render the correct page
+                renderPage(i);
+                
+                const text = await getPageText(i);
+                
+                // Speak the slide
+                await speak(text, 'PRESENT', '', i, totalSlides);
+                
+                // Double check we weren't interrupted *during* the speech function
+                // If we were, 'i' will increment in the next loop, so we might want to decrement?
+                // For simplicity, we assume if interrupted during speech, we move to next slide after answer.
+                // To repeat slide after answer, use: if(isInterrupted) i--;
+            }
+            
+            statusEl.textContent = "Presentation Finished";
+            btn.textContent = "Finished";
+        };
+
+        // --- PDF HELPERS ---
         const canvas = document.getElementById('pdf-canvas');
         const ctx = canvas.getContext('2d');
-        const BASE_URL = 'http://127.0.0.1:3000'; 
- 
-        // 1. PDF LOADER
-        document.getElementById('pdf-input').addEventListener('change', async (e) => {
+        
+        document.getElementById('pdf-input').onchange = async (e) => {
             const file = e.target.files[0];
-            if(!file) return;
             const data = new Uint8Array(await file.arrayBuffer());
             pdfDoc = await pdfjsLib.getDocument({ data }).promise;
             renderPage(1);
-            document.getElementById('present-btn').disabled = false;
-            document.getElementById('caption').textContent = `Loaded ${pdfDoc.numPages} slides.`;
-        });
- 
+            if(statusEl.textContent.includes("Online")) document.getElementById('start-btn').disabled = false;
+        };
+
         function renderPage(num) {
             pageNum = num;
             pdfDoc.getPage(num).then(page => {
-                const viewport = page.getViewport({ scale: 1.2 });
+                const viewport = page.getViewport({ scale: 1.0 });
                 canvas.height = viewport.height;
                 canvas.width = viewport.width;
                 page.render({ canvasContext: ctx, viewport: viewport });
             });
         }
- 
+        
         async function getPageText(num) {
             const page = await pdfDoc.getPage(num);
-            const content = await page.getTextContent();
-            return content.items.map(i => i.str).join(' ');
-        }
-
-        // Helper to update the iframe safely
-        function updateAvatar(roomUrl) {
-            const frame = document.getElementById('simli-frame');
-            // Add autojoin parameters to skip the "Join Room" button in Simli
-            frame.src = `${roomUrl}?autojoin=1`;
-        }
- 
-        // 2. CONNECT AVATAR (Initial Connection)
-        document.getElementById('connect-btn').onclick = async () => {
-            const btn = document.getElementById('connect-btn');
-            btn.textContent = "Connecting...";
-            try {
-                const res = await fetch(`${BASE_URL}/simli/start-session`, { method: 'POST' });
-                const data = await res.json();
-                
-                // Simli usually returns roomUrl or meetingUrl
-                const url = data.roomUrl || data.meetingUrl;
-
-                if(url) {
-                    updateAvatar(url);
-                    document.getElementById('connect-overlay').style.display = 'none';
-                    isConnected = true;
-                    document.getElementById('caption').textContent = "Avatar connected. Ready to present.";
-                } else {
-                    alert("Error: No URL received. Check server console.");
-                }
-            } catch(e) {
-                alert("Connection failed: " + e.message);
-                btn.textContent = "Retry";
-            }
-        };
- 
-        // 3. PRESENTATION LOOP
-        document.getElementById('present-btn').onclick = async () => {
-            if(!isConnected) return alert("Please click 'Connect Avatar' first.");
-           
-            const btn = document.getElementById('present-btn');
-            btn.disabled = true;
-            btn.textContent = "Presenting...";
- 
-            for(let i = 1; i <= pdfDoc.numPages; i++) {
-                if(isInteracting) { i--; await smartDelay(1000); continue; } // Pause loop if answering
-
-                renderPage(i);
-               
-                document.getElementById('caption').textContent = `Analyzing Slide ${i}...`;
-                const text = await getPageText(i);
-                
-                try {
-                    const res = await fetch(`${BASE_URL}/agent/present`, {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({ slide_text: text })
-                    });
-                    const data = await res.json();
-                
-                    document.getElementById('caption').textContent = "Speaking...";
-                    
-                    // The server uses 'auto/start/configurable' which returns a NEW room/video URL for this specific speech
-                    if(data.simli && (data.simli.roomUrl || data.simli.meetingUrl)) {
-                        updateAvatar(data.simli.roomUrl || data.simli.meetingUrl);
-                    }
-
-                    // Estimate speech duration to stay on slide
-                    const words = data.speech.split(' ').length;
-                    const durationMs = (words / 2.5) * 1000 + 4000; // Buffer for startup
-                    await smartDelay(durationMs);
-
-                } catch(e) {
-                    console.error(e);
-                    document.getElementById('caption').textContent = "Error generating speech.";
-                }
-            }
-           
-            btn.textContent = "Presentation Finished";
-            btn.disabled = false;
-        };
- 
-        // 4. ASK QUESTION
-        document.getElementById('ask-btn').onclick = async () => {
-            const q = document.getElementById('question-input').value;
-            if(!q) return;
- 
-            isInteracting = true; // PAUSE SLIDES
-            document.getElementById('avatar-stage').classList.add('interacting');
-            document.getElementById('caption').textContent = "Thinking...";
- 
-            const currentSlideText = await getPageText(pageNum);
-            
-            try {
-                const res = await fetch(`${BASE_URL}/agent/interact`, {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ user_question: q, slide_context: currentSlideText })
-                });
-                const data = await res.json();
-            
-                document.getElementById('question-input').value = "";
-                document.getElementById('caption').textContent = "Answering...";
-
-                // Update iframe with the Answer video
-                if(data.simli && (data.simli.roomUrl || data.simli.meetingUrl)) {
-                    updateAvatar(data.simli.roomUrl || data.simli.meetingUrl);
-                }
-            
-                // Wait for answer
-                const words = data.answer.split(' ').length;
-                const durationMs = (words / 2.5) * 1000 + 3000;
-    
-                setTimeout(() => {
-                    isInteracting = false; // RESUME SLIDES
-                    document.getElementById('avatar-stage').classList.remove('interacting');
-                    document.getElementById('caption').textContent = "Resuming presentation...";
-                }, durationMs);
-
-            } catch (e) {
-                alert("Interaction failed");
-                isInteracting = false;
-            }
-        };
- 
-        function smartDelay(ms) {
-            return new Promise(resolve => {
-                const step = 200;
-                let elapsed = 0;
-                const timer = setInterval(() => {
-                    // Only count time if NOT interacting
-                    if(!isInteracting) elapsed += step;
-                    if(elapsed >= ms) {
-                        clearInterval(timer);
-                        resolve();
-                    }
-                }, step);
-            });
+            const c = await page.getTextContent();
+            return c.items.map(i => i.str).join(' ');
         }
     </script>
 </body>
