@@ -52,6 +52,41 @@ app.post('/agent/speak', async (req, res) => {
         let messages = [];
         let finalScript = "";
 
+        // --- SCENARIO 0: SHOULD WE ASK A QUESTION? (No TTS, JSON only) ---
+        if (type === 'SHOULD_ASK') {
+            const decisionCompletion = await openai.chat.completions.create({
+                model: "gpt-4o",
+                messages: [
+                    {
+                        role: "system",
+                        content: `You decide if the presenter should pause to ask the audience for questions.
+                        Return ONLY JSON: { "ask": true|false }
+                        
+                        Inputs you get:
+                        - slide_index: ${slideIndex}
+                        - total_slides: ${totalSlides}
+                        - slide_text: "${text || ""}"
+                        - slides_since_last_ask: ${req.body.slidesSinceLastAsk ?? "null"}
+                        - recent_user_question: ${req.body.recentUserQuestion ?? false}
+
+                        Rules:
+                        - Never ask on title slide (slide 1) unless explicitly a Q&A slide.
+                        - Avoid asking if the user just asked a question (recent_user_question=true).
+                        - Prefer asking after dense/long slides or after every ~3-4 content slides.
+                        - Avoid asking on the final slide unless it's a dedicated Q&A.
+                        - Keep asks sparse: generally not more than once every 2 slides.
+                        `
+                    },
+                    { role: "user", content: "Decide if we should ask for questions now." }
+                ],
+                response_format: { type: "json_object" },
+                temperature: 0.2
+            });
+
+            const decision = JSON.parse(decisionCompletion.choices[0].message.content || "{}");
+            return res.json({ ask: !!decision.ask });
+        }
+
         // --- SCENARIO 1: THE BRAIN (Check User Intent) ---
         // This runs when the user speaks into the microphone. 
         // We check: Is this a question? Or do they want to move on?

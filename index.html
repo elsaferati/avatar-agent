@@ -176,6 +176,8 @@
         const prevBtn = document.getElementById('prev-btn');
         const nextBtn = document.getElementById('next-btn');
         const micBtn = document.getElementById('mic-btn');
+        let slidesSinceLastAsk = 0;
+        let recentUserQuestion = false;
 
         // --- 1. CONNECT ---
         document.getElementById('connect-btn').onclick = async () => {
@@ -246,7 +248,9 @@
                     addLog("System", "Resuming presentation...");
                     statusEl.textContent = "Status: Resuming...";
                     isInterrupted = false; // <--- Unpauses the loop
+                    recentUserQuestion = false;
                 } else {
+                    recentUserQuestion = true;
                     await handleQuestionLoop(userText);
                 }
             } catch (err) {
@@ -274,6 +278,29 @@
 
             // Listen again for follow-up
             startAutoListening();
+        }
+
+        // Decide if we should ask a checkpoint question
+        async function shouldAskQuestion(slideText, slideIndex, totalSlides, sinceLastAsk, hadRecentUserQuestion) {
+            try {
+                const res = await fetch(`${BASE_URL}/agent/speak`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ 
+                        text: slideText,
+                        type: 'SHOULD_ASK',
+                        slideIndex,
+                        totalSlides,
+                        slidesSinceLastAsk: sinceLastAsk,
+                        recentUserQuestion: hadRecentUserQuestion
+                    })
+                });
+                const data = await res.json();
+                return !!data.ask;
+            } catch (err) {
+                console.error("Should-ask decision failed:", err);
+                return false;
+            }
         }
 
         // C. Start Microphone
@@ -319,6 +346,8 @@
             
             isPresenting = true;
             isInterrupted = false;
+            slidesSinceLastAsk = 0;
+            recentUserQuestion = false;
             
             startBtn.disabled = true;
             stopBtn.disabled = false;
@@ -366,30 +395,33 @@
                         addLog("System", "Error: Received empty response from brain.");
                     }
 
-                    // --- D. CHECKPOINT: Ask for questions ---
+                    // --- D. CHECKPOINT: Ask for questions (LLM decides) ---
                     if (isPresenting && currentSlide < totalSlides) {
-                        
-                        const checkText = "Does that make sense, or do you have any questions?";
-                        
-                        // Only speak the checkpoint, don't log it to chat repeatedly if you prefer
-                        // addLog("Elsa", checkText); 
-                        
-                        const ttsRes = await fetch(`${BASE_URL}/agent/speak`, {
-                            method: 'POST',
-                            headers: {'Content-Type': 'application/json'},
-                            body: JSON.stringify({ text: checkText, type: 'TTS_ONLY' })
-                        });
-                        const ttsData = await ttsRes.json();
-                        await playAudioData(ttsData.audio);
+                        const shouldAsk = await shouldAskQuestion(text, currentSlide, totalSlides, slidesSinceLastAsk, recentUserQuestion);
+                        if (shouldAsk) {
+                            const checkText = "Does that make sense, or do you have any questions?";
+                            
+                            const ttsRes = await fetch(`${BASE_URL}/agent/speak`, {
+                                method: 'POST',
+                                headers: {'Content-Type': 'application/json'},
+                                body: JSON.stringify({ text: checkText, type: 'TTS_ONLY' })
+                            });
+                            const ttsData = await ttsRes.json();
+                            await playAudioData(ttsData.audio);
 
-                        // PAUSE and LISTEN
-                        isInterrupted = true;
-                        startAutoListening();
+                            // PAUSE and LISTEN
+                            isInterrupted = true;
+                            startAutoListening();
+                            slidesSinceLastAsk = 0;
+                            recentUserQuestion = false;
 
-                        // Wait loop
-                        statusEl.textContent = "Status: Waiting for user input...";
-                        while(isInterrupted && isPresenting) {
-                            await new Promise(r => setTimeout(r, 500));
+                            // Wait loop
+                            statusEl.textContent = "Status: Waiting for user input...";
+                            while(isInterrupted && isPresenting) {
+                                await new Promise(r => setTimeout(r, 500));
+                            }
+                        } else {
+                            slidesSinceLastAsk += 1;
                         }
                     }
 
