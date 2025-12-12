@@ -222,7 +222,7 @@
 
         // --- 3. UNIFIED INPUT LOGIC (TEXT & VOICE) ---
 
-        // A. Shared Function: Handles "Did the user say Question or Continue?"
+       // A. Shared Function: Handles "Did the user say Question or Continue?"
         async function processUserInput(userText) {
             if (!userText.trim()) return;
 
@@ -236,7 +236,7 @@
             statusEl.textContent = "Status: Thinking...";
             
             try {
-                // Ask Backend Intent
+                // 1. Ask Backend Intent
                 const checkRes = await fetch(`${BASE_URL}/agent/speak`, {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
@@ -245,12 +245,47 @@
                 const decision = await checkRes.json();
 
                 if (decision.action === "RESUME") {
+                    
+                    // --- NEW LOGIC: CHECK IF WE NEED A RECAP ---
+                    if (recentUserQuestion) {
+                        addLog("System", "Generating Recap...");
+                        statusEl.textContent = "Status: Recapping...";
+                        
+                        // Get current slide context again
+                        const context = await getPageText(currentSlide);
+                        
+                        // Call Backend for Recap
+                        const recapRes = await fetch(`${BASE_URL}/agent/speak`, {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({ 
+                                text: context, 
+                                type: 'RECAP', 
+                                slideIndex: currentSlide 
+                            })
+                        });
+                        const recapData = await recapRes.json();
+                        
+                        // Play the Recap Audio
+                        addLog("Elsa", recapData.text);
+                        await playAudioData(recapData.audio);
+                    }
+                    
+                    // --- NORMAL RESUME ---
                     addLog("System", "Resuming presentation...");
                     statusEl.textContent = "Status: Resuming...";
-                    isInterrupted = false; // <--- Unpauses the loop
-                    recentUserQuestion = false;
+                    
+                    isInterrupted = false; // Unpauses the loop
+                    recentUserQuestion = false; // Reset the flag
+                    
+                    // If the user hit "Stop" manually earlier, we might need to restart the loop manually
+                    if (!isPresenting) {
+                        startBtn.click();
+                    }
+
                 } else {
-                    recentUserQuestion = true;
+                    // It is a question
+                    recentUserQuestion = true; // Mark that a question happened
                     await handleQuestionLoop(userText);
                 }
             } catch (err) {

@@ -187,6 +187,32 @@ app.post('/agent/speak', async (req, res) => {
             });
             finalScript = completion.choices[0].message.content;
         }
+        else if (type === 'RECAP') {
+            messages = [
+                {
+                    role: "system",
+                    content: `You are Elsa. You just finished answering a user's questions about the current slide.
+                    Now we need to get back on track.
+                    
+                    Context:
+                    - Current Slide Text: "${text}"
+                    
+                    TASK:
+                    1. Briefly summarize the *one* key takeaway of this current slide (1 sentence) so they don't forget.
+                    2. Say a smooth transition phrase like "Now, let's move on to the next section."
+                    `
+                },
+                { role: "user", content: "Recap and move on." }
+            ];
+
+            const completion = await openai.chat.completions.create({
+                model: "gpt-4o",
+                messages: messages,
+                max_tokens: 150,
+                temperature: 0.5 
+            });
+            finalScript = completion.choices[0].message.content;
+        }
 
         // --- SCENARIO 4: TTS ONLY (Direct Speech) ---
         // Used when we just want the Avatar to say a specific phrase without thinking (e.g., "Any questions?")
