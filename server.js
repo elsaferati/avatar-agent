@@ -45,14 +45,44 @@ app.get('/simli-config', (req, res) => {
 });
 
 app.post('/agent/speak', async (req, res) => {
-    // NEW: We accept 'image' (base64)
+    // We accept 'image' (base64) for vision, and 'type' to determine logic
     const { text, type, context, slideIndex, totalSlides, image } = req.body; 
     
     try {
         let messages = [];
+        let finalScript = "";
 
-        // --- SCENARIO A: PRESENTING (With Vision) ---
-        if (type === 'PRESENT') {
+        // --- SCENARIO 1: THE BRAIN (Check User Intent) ---
+        // This runs when the user speaks into the microphone. 
+        // We check: Is this a question? Or do they want to move on?
+        if (type === 'DECIDE_NEXT_MOVE') {
+            const decisionCompletion = await openai.chat.completions.create({
+                model: "gpt-4o",
+                messages: [
+                    {
+                        role: "system",
+                        content: `You are the presentation logic brain. 
+                        Analyze the user's spoken input.
+                        Return JSON ONLY: { "action": "ANSWER" | "RESUME" }
+
+                        Rules:
+                        - If the user asks a question, requests clarification, or makes a comment needing a reply -> action: "ANSWER"
+                        - If the user says "No", "No questions", "Go ahead", "Continue", "Next", "That's clear" -> action: "RESUME"
+                        `
+                    },
+                    { role: "user", content: text }
+                ],
+                response_format: { type: "json_object" },
+                temperature: 0.0
+            });
+
+            const decision = JSON.parse(decisionCompletion.choices[0].message.content);
+            // Return immediately. We don't generate audio for this step.
+            return res.json(decision);
+        }
+
+        // --- SCENARIO 2: PRESENTING (With Vision) ---
+        else if (type === 'PRESENT') {
             let styleInstruction = "";
             
             if (slideIndex === 1) {
@@ -61,63 +91,83 @@ app.post('/agent/speak', async (req, res) => {
                 styleInstruction = `Summarize the key takeaway. Thank the audience. Ask if there are questions.`;
             } else {
                 styleInstruction = `
-                - Explain the visual content of the slide (charts, bullets, images).
+                - Explain the visual content (charts, bullets, images).
                 - Use transition phrases like "If you look at this graph..." or "As shown here...".
                 - Keep it engaging.
-                
-                TEACHER MODE: Occasionally (every 2-3 slides) ask a rhetorical question to check understanding, like "Does that make sense?" or "Pretty interesting, right?"
                 `;
             }
 
-            // VISION PAYLOAD
             messages = [
                 {
                     role: "system",
                     content: `You are **Elsa**, the Lead Presenter for **PrimEx**. 
                     You can SEE the slide the user is looking at. 
                     ${styleInstruction}
-                    RULES: Be punchy (Max 3 sentences). Speak as "we".`
+                    RULES: Be punchy (Max 3 sentences). Speak as "we". 
+                    At the end of your explanation, occasionally ask a quick check-in like "Does that make sense?"`
                 },
                 { 
                     role: "user", 
                     content: [
                         { type: "text", text: `I am showing Slide ${slideIndex}. The extracted text is: "${text}". Present this slide based on the image provided.` },
-                        { type: "image_url", image_url: { url: image } } // Pass the image to GPT-4o
+                        { type: "image_url", image_url: { url: image } } 
                     ]
                 }
             ];
+
+            const completion = await openai.chat.completions.create({
+                model: "gpt-4o",
+                messages: messages,
+                max_tokens: 250,
+                temperature: 0.7 
+            });
+            finalScript = completion.choices[0].message.content;
         } 
         
-        // --- SCENARIO B: ANSWERING ---
+        // --- SCENARIO 3: ANSWERING (Conversational Loop) ---
         else if (type === 'ANSWER') {
             const pineconeData = await getCompanyKnowledge(text);
             messages = [
                 {
                     role: "system",
-                    content: `You are Elsa. You were presenting but got interrupted.
+                    content: `You are Elsa. You were interrupted by a question.
                     internal_knowledge: "${pineconeData}"
                     slide_context: "${context}"
-                    Answer briefly and transition back to the presentation.`
+                    
+                    TASK:
+                    1. Answer the user's question clearly and briefly.
+                    2. IMMEDIATELY after answering, ask a short check-in question to see if they are done.
+                    Example: "The cost is $5. Does that help?" or "We ship globally. Any other questions on that?"
+                    `
                 },
                 ...conversationHistory, 
                 { role: "user", content: text }
             ];
+
+            const completion = await openai.chat.completions.create({
+                model: "gpt-4o",
+                messages: messages,
+                max_tokens: 250,
+                temperature: 0.7 
+            });
+            finalScript = completion.choices[0].message.content;
         }
 
-        const completion = await openai.chat.completions.create({
-            model: "gpt-4o", // SWITCHED TO GPT-4o FOR VISION
-            messages: messages,
-            max_tokens: 250,
-            temperature: 0.7 
-        });
+        // --- SCENARIO 4: TTS ONLY (Direct Speech) ---
+        // Used when we just want the Avatar to say a specific phrase without thinking (e.g., "Any questions?")
+        else if (type === 'TTS_ONLY') {
+            finalScript = text;
+        }
+
+        // --- COMMON: SAVE MEMORY & GENERATE AUDIO ---
         
-        const finalScript = completion.choices[0].message.content;
+        // Save to memory (unless it's just a TTS command)
+        if (type !== 'TTS_ONLY') {
+            conversationHistory.push({ role: "assistant", content: finalScript });
+            if (conversationHistory.length > 6) conversationHistory = conversationHistory.slice(-6);
+        }
 
-        // Save Memory
-        conversationHistory.push({ role: "assistant", content: finalScript });
-        if (conversationHistory.length > 6) conversationHistory = conversationHistory.slice(-6);
-
-        // Audio Generation
+        // Audio Generation (ElevenLabs)
         const ttsResp = await axios.post(
             `https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}?output_format=pcm_16000`,
             {
