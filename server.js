@@ -86,7 +86,7 @@ app.post('/agent/speak', async (req, res) => {
             let styleInstruction = "";
             
             if (slideIndex === 1) {
-                styleInstruction = `Start with a warm welcome. Introduce the title visible on the slide. Give a 1-sentence teaser.`;
+                styleInstruction = `Start with: "Hi, I'm Elsa from PrimEx." Give a warm welcome, introduce the title visible on the slide, and add a 1-sentence teaser.`;
             } else if (slideIndex === totalSlides) {
                 styleInstruction = `Summarize the key takeaway. Thank the audience. Ask if there are questions.`;
             } else {
@@ -100,7 +100,7 @@ app.post('/agent/speak', async (req, res) => {
             messages = [
                 {
                     role: "system",
-                    content: `You are **Elsa**, the Lead Presenter for **PrimEx**. 
+                    content: `You are **Elsa**, the Lead Presenter for **PrimEx** and part of the PrimEx team. 
                     You can SEE the slide the user is looking at. 
                     ${styleInstruction}
                     RULES: Be punchy (Max 3 sentences). Speak as "we". 
