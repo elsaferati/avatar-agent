@@ -99,7 +99,7 @@
         </div>
         <div id="pdf-stage"><canvas id="pdf-canvas"></canvas></div>
     </div>
- 
+ <canvas id="hidden-canvas" style="display: none;"></canvas>
     <!-- RIGHT: AVATAR -->
     <div class="col right">
         <div id="avatar-container">
@@ -142,8 +142,7 @@
     </div>
  
     <!-- LOGIC -->
-    <!-- LOGIC -->
-    <!-- LOGIC -->
+   <!-- LOGIC -->
     <script type="module">
         import { SimliClient } from 'https://esm.sh/simli-client@latest';
 
@@ -155,11 +154,22 @@
         let isPresenting = false;  
         let isInterrupted = false; 
         
-        let slideAbortController = null;
-        const audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+        // VAD (Voice Activity Detection) State
+        let audioContext = null;
+        let analyser = null;
+        let microphoneStream = null;
+        let dataArray = null;
+        let isMonitoringMic = false;
+        // TWEAK THIS: 0.0 to 1.0. Higher = you have to shout. Lower = sensitive.
+        const INTERRUPTION_THRESHOLD = 0.25; 
+
+        // State variables
+        let slidesSinceLastAsk = 0;
+        let recentUserQuestion = false;
+
         const simli = new SimliClient();
         
-        // Voice Recognition Setup
+        // Voice Recognition
         const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
         const recognition = new SpeechRecognition();
         recognition.continuous = false; 
@@ -173,25 +183,27 @@
         const avatarContainer = document.getElementById('avatar-container');
         const startBtn = document.getElementById('start-btn');
         const stopBtn = document.getElementById('stop-btn');
-        const prevBtn = document.getElementById('prev-btn');
-        const nextBtn = document.getElementById('next-btn');
         const micBtn = document.getElementById('mic-btn');
-        let slidesSinceLastAsk = 0;
-        let recentUserQuestion = false;
 
-        // --- 1. CONNECT ---
+        // --- 1. CONNECT & SETUP MIC MONITORING ---
         document.getElementById('connect-btn').onclick = async () => {
             const btn = document.getElementById('connect-btn');
             btn.textContent = "Connecting...";
             try {
-                await audioCtx.resume();
+                // Initialize Audio Context for Simli AND for VAD
+                audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+                await audioContext.resume();
+
                 const cfgReq = await fetch(`${BASE_URL}/simli-config`);
                 const config = await cfgReq.json();
                 
                 simli.Initialize({ apiKey: config.apiKey, faceID: config.faceID, handleSilence: true, videoRef: videoEl, audioRef: audioEl });
                 await simli.start();
                 
-                statusEl.textContent = "Status: Online";
+                // --- START VAD (Listen for interruption) ---
+                await setupVAD();
+
+                statusEl.textContent = "Status: Online (Listening for interruption)";
                 document.getElementById('connect-overlay').style.display = 'none';
                 if(pdfDoc) enableControls(true);
                 document.getElementById('send-btn').disabled = false;
@@ -203,40 +215,87 @@
 
         function enableControls(enabled) {
             startBtn.disabled = !enabled;
-            prevBtn.disabled = !enabled;
-            nextBtn.disabled = !enabled;
+            // prevBtn.disabled = !enabled; // simplified
+            // nextBtn.disabled = !enabled;
         }
 
-        // --- 2. AUDIO PLAYBACK HELPER ---
-        async function playAudioData(base64Audio) {
-            const binaryString = window.atob(base64Audio);
-            const bytes = new Uint8Array(binaryString.length);
-            for (let i = 0; i < binaryString.length; i++) bytes[i] = binaryString.charCodeAt(i);
+        // --- 2. VAD LOGIC (The "Interruption" Ear) ---
+        async function setupVAD() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                microphoneStream = audioContext.createMediaStreamSource(stream);
+                analyser = audioContext.createAnalyser();
+                analyser.fftSize = 512;
+                microphoneStream.connect(analyser);
+                dataArray = new Uint8Array(analyser.frequencyBinCount);
+                
+                isMonitoringMic = true;
+                monitorVolume();
+            } catch (e) {
+                console.error("Mic access denied for VAD:", e);
+            }
+        }
+
+        function monitorVolume() {
+            if (!isMonitoringMic) return;
             
-            simli.sendAudioData(bytes);
+            requestAnimationFrame(monitorVolume);
+            analyser.getByteFrequencyData(dataArray);
 
-            // Calculate duration to wait
-            const durationMs = (bytes.length / 2 / 16000) * 1000;
-            await new Promise(r => setTimeout(r, durationMs + 200)); 
+            // Calculate average volume
+            let sum = 0;
+            for(let i = 0; i < dataArray.length; i++) sum += dataArray[i];
+            const average = sum / dataArray.length;
+            const volume = average / 255; // Normalize 0.0 to 1.0
+
+            // VISUAL DEBUG: Uncomment to see volume in console
+            // if (volume > 0.05) console.log("Vol:", volume.toFixed(2));
+
+            // INTERRUPTION TRIGGER
+            // Only interrupt if:
+            // 1. We are currently presenting (speaking)
+            // 2. We are NOT already interrupted
+            // 3. Volume is LOUD enough (User is talking)
+            if (isPresenting && !isInterrupted && volume > INTERRUPTION_THRESHOLD) {
+                console.log("🔴 INTERRUPTION DETECTED! Volume:", volume);
+                interruptAndListen();
+            }
         }
 
-        // --- 3. UNIFIED INPUT LOGIC (TEXT & VOICE) ---
+        function interruptAndListen() {
+            // 1. Stop the loop logic
+            isInterrupted = true; 
+            
+            // 2. Kill the Audio/Video immediately
+            simli.ClearBuffer(); 
+            
+            // 3. Update UI
+            statusEl.textContent = "Status: I heard you! Listening...";
+            micBtn.classList.add('listening');
 
-       // A. Shared Function: Handles "Did the user say Question or Continue?"
+            // 4. Start actual speech recognition to get the text
+            try { 
+                recognition.start(); 
+            } catch(e) { 
+                // It might already be started, that's fine
+            }
+        }
+
+        // --- 3. INPUT HANDLING ---
+
+        // A. Shared Processor
         async function processUserInput(userText) {
             if (!userText.trim()) return;
 
-            // Stop mic to prevent double input
             try { recognition.stop(); } catch(e){}
             micBtn.classList.remove('listening');
 
             addLog("User", userText);
-            document.getElementById('q-input').value = ""; // Clear Input
+            document.getElementById('q-input').value = ""; 
 
             statusEl.textContent = "Status: Thinking...";
             
             try {
-                // 1. Ask Backend Intent
                 const checkRes = await fetch(`${BASE_URL}/agent/speak`, {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
@@ -246,46 +305,30 @@
 
                 if (decision.action === "RESUME") {
                     
-                    // --- NEW LOGIC: CHECK IF WE NEED A RECAP ---
                     if (recentUserQuestion) {
                         addLog("System", "Generating Recap...");
-                        statusEl.textContent = "Status: Recapping...";
-                        
-                        // Get current slide context again
                         const context = await getPageText(currentSlide);
-                        
-                        // Call Backend for Recap
                         const recapRes = await fetch(`${BASE_URL}/agent/speak`, {
                             method: 'POST',
                             headers: {'Content-Type': 'application/json'},
-                            body: JSON.stringify({ 
-                                text: context, 
-                                type: 'RECAP', 
-                                slideIndex: currentSlide 
-                            })
+                            body: JSON.stringify({ text: context, type: 'RECAP', slideIndex: currentSlide })
                         });
                         const recapData = await recapRes.json();
-                        
-                        // Play the Recap Audio
                         addLog("Elsa", recapData.text);
                         await playAudioData(recapData.audio);
                     }
-                    
-                    // --- NORMAL RESUME ---
-                    addLog("System", "Resuming presentation...");
+
+                    // RESUME
+                    addLog("System", "Resuming...");
                     statusEl.textContent = "Status: Resuming...";
+                    isInterrupted = false; 
+                    recentUserQuestion = false;
                     
-                    isInterrupted = false; // Unpauses the loop
-                    recentUserQuestion = false; // Reset the flag
-                    
-                    // If the user hit "Stop" manually earlier, we might need to restart the loop manually
-                    if (!isPresenting) {
-                        startBtn.click();
-                    }
+                    // Force restart loop if it fully stopped
+                    if (!isPresenting) startBtn.click();
 
                 } else {
-                    // It is a question
-                    recentUserQuestion = true; // Mark that a question happened
+                    recentUserQuestion = true;
                     await handleQuestionLoop(userText);
                 }
             } catch (err) {
@@ -294,7 +337,7 @@
             }
         }
 
-        // B. Handle Question & Follow-up
+        // B. Handle Question Loop
         async function handleQuestionLoop(questionText) {
             avatarContainer.classList.add('speaking-mode');
             const context = await getPageText(currentSlide);
@@ -308,74 +351,22 @@
             
             addLog("Elsa", data.text);
             await playAudioData(data.audio);
-            
             avatarContainer.classList.remove('speaking-mode');
 
-            // Listen again for follow-up
-            startAutoListening();
+            // Wait for user again (Manual or Auto based on silence)
+            // We set isInterrupted = true so the presentation doesn't auto-resume.
+            // The VAD will pick up the next "Resume" or Question command.
+            statusEl.textContent = "Status: Waiting for you...";
+            isInterrupted = true; 
         }
 
-        // Decide if we should ask a checkpoint question
-        async function shouldAskQuestion(slideText, slideIndex, totalSlides, sinceLastAsk, hadRecentUserQuestion) {
-            try {
-                const res = await fetch(`${BASE_URL}/agent/speak`, {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ 
-                        text: slideText,
-                        type: 'SHOULD_ASK',
-                        slideIndex,
-                        totalSlides,
-                        slidesSinceLastAsk: sinceLastAsk,
-                        recentUserQuestion: hadRecentUserQuestion
-                    })
-                });
-                const data = await res.json();
-                return !!data.ask;
-            } catch (err) {
-                console.error("Should-ask decision failed:", err);
-                return false;
-            }
-        }
-
-        // C. Start Microphone
-        function startAutoListening() {
-            console.log("🎤 Auto-listening...");
-            statusEl.textContent = "Status: Waiting for input...";
-            micBtn.classList.add('listening');
-            try { recognition.start(); } catch(e) { console.warn("Mic already on"); }
-        }
-
-        // --- EVENT LISTENERS FOR INPUT ---
-
-        // 1. Voice Result
         recognition.onresult = (e) => {
             const transcript = e.results[0][0].transcript;
             document.getElementById('q-input').value = transcript;
             processUserInput(transcript); 
         };
 
-        // 2. Send Button Click
-        document.getElementById('send-btn').onclick = () => {
-            const text = document.getElementById('q-input').value;
-            processUserInput(text);
-        };
-
-        // 3. Enter Key Press
-        document.getElementById('q-input').addEventListener("keypress", function(event) {
-            if (event.key === "Enter") {
-                event.preventDefault();
-                document.getElementById('send-btn').click();
-            }
-        });
-
-        // 4. Mic Button Click (Manual)
-        micBtn.onclick = () => {
-            startAutoListening();
-        };
-
-
-       // --- 4. PRESENTATION LOOP ---
+        // --- 4. PRESENTATION LOOP (With Hidden Canvas) ---
         startBtn.onclick = async () => {
             if(!pdfDoc) return alert("Load PDF first");
             
@@ -389,20 +380,29 @@
             startBtn.textContent = "Presenting...";
 
             const totalSlides = pdfDoc.numPages;
-            // Ensure we don't skip slides accidentally after restart
             if (currentSlide > totalSlides) currentSlide = 1;
+
+            if (currentSlide === 1) await renderPage(1);
 
             while (isPresenting && currentSlide <= totalSlides) {
                 
-                // A. Render
-                await renderPage(currentSlide);
-                statusEl.textContent = `Slide ${currentSlide} of ${totalSlides}`;
-                
-                // B. Generate Audio
-                const imageBase64 = document.getElementById('pdf-canvas').toDataURL('image/jpeg', 0.8);
+                // If we were interrupted by voice, wait here until resolved
+                while(isInterrupted && isPresenting) {
+                    await new Promise(r => setTimeout(r, 500));
+                }
+                if (!isPresenting) break;
+
+                statusEl.textContent = `Preparing Slide ${currentSlide}...`;
+
+                // A. Background Gen
+                await renderHiddenPage(currentSlide);
+                const imageBase64 = document.getElementById('hidden-canvas').toDataURL('image/jpeg', 0.8);
                 const text = await getPageText(currentSlide);
                 
-                addLog("System", `Slide ${currentSlide}: Generating...`);
+                // Check interrupt again before fetch
+                if (isInterrupted) continue; 
+
+                addLog("System", `Slide ${currentSlide}: Thinking...`);
                 
                 try {
                     const res = await fetch(`${BASE_URL}/agent/speak`, {
@@ -412,30 +412,29 @@
                     });
                     
                     const data = await res.json();
-
-                    // --- ERROR CHECK ---
-                    if (data.error) {
-                        addLog("System", "❌ Error: " + data.error);
-                        console.error(data.error);
-                        break; // Stop presentation on error
-                    }
                     
+                    // Check interrupt again before Playing
+                    if (isInterrupted) continue;
+
+                    if (data.error) { console.error(data.error); break; }
                     if (!isPresenting) break; 
 
-                    // C. Speak
+                    // B. Reveal & Speak
+                    await renderPage(currentSlide);
+                    statusEl.textContent = `Slide ${currentSlide} of ${totalSlides}`;
+
                     if (data.text) {
                         addLog("Elsa", data.text);
                         if (data.audio) await playAudioData(data.audio);
-                    } else {
-                        addLog("System", "Error: Received empty response from brain.");
                     }
 
-                    // --- D. CHECKPOINT: Ask for questions (LLM decides) ---
-                    if (isPresenting && currentSlide < totalSlides) {
-                        const shouldAsk = await shouldAskQuestion(text, currentSlide, totalSlides, slidesSinceLastAsk, recentUserQuestion);
-                        if (shouldAsk) {
-                            const checkText = "Does that make sense, or do you have any questions?";
-                            
+                    // C. Logic Checkpoint (Only if NOT interrupted by VAD during speech)
+                    if (isPresenting && !isInterrupted && currentSlide < totalSlides) {
+                         const shouldAsk = await shouldAskQuestion(text, currentSlide, totalSlides, slidesSinceLastAsk, recentUserQuestion);
+                         
+                         // Double check interrupt before asking
+                         if (!isInterrupted && shouldAsk) {
+                            const checkText = "Does that make sense?";
                             const ttsRes = await fetch(`${BASE_URL}/agent/speak`, {
                                 method: 'POST',
                                 headers: {'Content-Type': 'application/json'},
@@ -444,52 +443,71 @@
                             const ttsData = await ttsRes.json();
                             await playAudioData(ttsData.audio);
 
-                            // PAUSE and LISTEN
-                            isInterrupted = true;
-                            startAutoListening();
-                            slidesSinceLastAsk = 0;
-                            recentUserQuestion = false;
-
-                            // Wait loop
-                            statusEl.textContent = "Status: Waiting for user input...";
-                            while(isInterrupted && isPresenting) {
-                                await new Promise(r => setTimeout(r, 500));
-                            }
-                        } else {
+                            // Force listen state
+                            interruptAndListen();
+                            // Wait loop handled by main loop check
+                         } else {
                             slidesSinceLastAsk += 1;
-                        }
+                         }
                     }
 
-                    if (isPresenting) currentSlide++; 
+                    if (isPresenting && !isInterrupted) currentSlide++; 
 
                 } catch (err) {
-                    addLog("System", "❌ Connection Error: " + err.message);
+                    console.error(err);
                     break;
                 }
             }
-            
-            if (currentSlide > totalSlides) {
-                statusEl.textContent = "Presentation Finished";
-                startBtn.textContent = "↺ Restart";
-                startBtn.disabled = false;
-                stopBtn.disabled = true;
-                isPresenting = false;
-                currentSlide = 1;
-            }
         };
 
-        // --- 5. STOP ---
-        stopBtn.onclick = () => {
-            isPresenting = false;
-            isInterrupted = false;
-            simli.ClearBuffer();
-            statusEl.textContent = "Stopped";
-            startBtn.disabled = false;
-            stopBtn.disabled = true;
-            micBtn.classList.remove('listening');
-        };
 
         // --- HELPERS ---
+        async function playAudioData(base64Audio) {
+            const binaryString = window.atob(base64Audio);
+            const bytes = new Uint8Array(binaryString.length);
+            for (let i = 0; i < binaryString.length; i++) bytes[i] = binaryString.charCodeAt(i);
+            
+            simli.sendAudioData(bytes);
+
+            // Wait for audio duration
+            // BUT: Check for interruption constantly
+            const durationMs = (bytes.length / 2 / 16000) * 1000;
+            const steps = 20; 
+            const stepTime = (durationMs + 200) / steps;
+
+            for(let i=0; i<steps; i++) {
+                if (isInterrupted) {
+                    simli.ClearBuffer();
+                    break; 
+                }
+                await new Promise(r => setTimeout(r, stepTime));
+            }
+        }
+
+        async function renderHiddenPage(num) {
+            if(num > pdfDoc.numPages) return;
+            const page = await pdfDoc.getPage(num);
+            const viewport = page.getViewport({ scale: 1.5 });
+            const hiddenCanvas = document.getElementById('hidden-canvas');
+            const hiddenCtx = hiddenCanvas.getContext('2d');
+            hiddenCanvas.height = viewport.height;
+            hiddenCanvas.width = viewport.width;
+            await page.render({ canvasContext: hiddenCtx, viewport: viewport }).promise;
+        }
+
+        async function shouldAskQuestion(slideText, slideIndex, totalSlides, sinceLastAsk, hadRecentUserQuestion) {
+            try {
+                const res = await fetch(`${BASE_URL}/agent/speak`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ text: slideText, type: 'SHOULD_ASK', slideIndex, totalSlides, slidesSinceLastAsk: sinceLastAsk, recentUserQuestion: hadRecentUserQuestion })
+                });
+                const data = await res.json();
+                return !!data.ask;
+            } catch { return false; }
+        }
+
+        // Standard Helpers
         function addLog(role, text) {
             const div = document.createElement('div');
             div.className = "msg-row";
@@ -525,6 +543,17 @@
             const c = await page.getTextContent();
             return c.items.map(i => i.str).join(' ');
         }
+        
+        // --- 5. STOP ---
+        stopBtn.onclick = () => {
+            isPresenting = false;
+            isInterrupted = false;
+            simli.ClearBuffer();
+            statusEl.textContent = "Stopped";
+            startBtn.disabled = false;
+            stopBtn.disabled = true;
+            micBtn.classList.remove('listening');
+        };
     </script>
 </body>
 </html>
